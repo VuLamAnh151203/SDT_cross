@@ -220,6 +220,7 @@ def selective_edge_gate(
     probability_matrix: np.ndarray,
     configuration: GateConfiguration,
     modality_index: int,
+    eligible_targets: set[int] | None = None,
 ) -> tuple[np.ndarray, list[dict[str, float | int]]]:
     """Return one conversation's gate and per-target abstention decisions."""
     if probability_matrix.ndim != 3 or probability_matrix.shape[2] != 3:
@@ -249,6 +250,8 @@ def selective_edge_gate(
         beneficial = float(values[local, 2])
         margin = float(harm_margin[local])
         intervene = (
+            (eligible_targets is None or target in eligible_targets)
+            and
             harmful >= configuration.probability_threshold
             and margin >= configuration.margin_threshold
         )
@@ -274,6 +277,7 @@ def _evaluate(
     modality: str,
     device: torch.device,
     max_batches: int,
+    allowed_targets: set[tuple[str, int]] | None = None,
 ) -> tuple[dict[str, float], list[dict[str, object]]]:
     labels_all: list[int] = []
     predictions_all: list[int] = []
@@ -312,8 +316,14 @@ def _evaluate(
                             f"D1/model length mismatch for {conversation}: "
                             f"{matrix.shape[:2]} != {(length, length)}"
                         )
+                eligible = None
+                if allowed_targets is not None:
+                    eligible = {
+                        target for target in range(length)
+                        if (str(conversation), target) in allowed_targets
+                    }
                 gate, decisions = selective_edge_gate(
-                    matrix, configuration, modality_index,
+                    matrix, configuration, modality_index, eligible,
                 )
                 edge_gate[batch_index, :length, :length] = torch.from_numpy(gate).to(device)
                 batch_decisions.append(decisions)

@@ -19,6 +19,9 @@ from d1_harm_learnability import precision_at_k, spearman
 from d1_prepare_edge_dataset import predictor_splits
 from e1_mixed_contribution import aggregate_pairs
 from e3_three_class_abstention import GateConfiguration, selective_edge_gate
+from e3_target_coverage_abstention import (
+    target_scores, threshold_selection, validation_coverage_selection,
+)
 from e3_train_compare import ImpactTeacher
 from generate_train_edge_teacher import select_teacher_action
 
@@ -201,6 +204,28 @@ class ResearchGapValidationTests(unittest.TestCase):
         self.assertAlmostEqual(float(gate[0, 2, 0]), 0.625)
         self.assertEqual(int(np.sum(gate[:, :, 0] < 1.0)), 1)
         np.testing.assert_array_equal(gate[:, :, 1:], np.ones_like(gate[:, :, 1:]))
+
+    def test_coverage_abstention_selects_exact_validation_fraction(self):
+        matrix = np.full((3, 3, 3), np.nan, dtype=np.float32)
+        matrix[0, 1], matrix[0, 2] = [0.8, 0.1, 0.1], [0.6, 0.2, 0.2]
+        matrix[1, 0], matrix[1, 2] = [0.5, 0.3, 0.2], [0.4, 0.3, 0.3]
+        matrix[2, 0], matrix[2, 1] = [0.3, 0.4, 0.3], [0.2, 0.4, 0.4]
+        ranked = target_scores({"c": matrix})
+        selected, cutoff = validation_coverage_selection(ranked, 1 / 3)
+        self.assertEqual(selected, {("c", 0)})
+        self.assertAlmostEqual(cutoff, 0.7)
+        self.assertEqual(threshold_selection(ranked, cutoff), selected)
+
+    def test_coverage_allowlist_prevents_unselected_intervention(self):
+        probabilities = np.full((2, 2, 3), np.nan, dtype=np.float32)
+        probabilities[0, 1] = [0.9, 0.05, 0.05]
+        probabilities[1, 0] = [0.8, 0.1, 0.1]
+        gate, decisions = selective_edge_gate(
+            probabilities, GateConfiguration(0.0, -1.0, 1.0), 0, {1},
+        )
+        self.assertEqual(decisions[0]["intervened"], 0)
+        self.assertEqual(decisions[1]["intervened"], 1)
+        self.assertEqual(float(gate[0, 1, 0]), 1.0)
 
 
 if __name__ == "__main__":
