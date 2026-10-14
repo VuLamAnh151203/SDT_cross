@@ -18,6 +18,7 @@ FIVE_GATE_LR="${FIVE_GATE_LR:-0.0003}"
 FIVE_SELECTION_METRIC="${FIVE_SELECTION_METRIC:-weighted_f1}"
 FIVE_LAMBDA_IMPACT="${FIVE_LAMBDA_IMPACT:-0.01}"
 FIVE_INITIAL_GATE="${FIVE_INITIAL_GATE:-0.99}"
+FIVE_REUSE_COMPLETED_RUNS="${FIVE_REUSE_COMPLETED_RUNS:-1}"
 
 SWEEP_SEEDS="${SWEEP_SEEDS:-2024}"
 SWEEP_MODELS="${SWEEP_MODELS:-B3 B4}"
@@ -28,18 +29,23 @@ mkdir -p "$FIVE_OUTPUT_DIR"
 read -r -a FIVE_SEED_ARRAY <<< "$FIVE_SEEDS"
 
 echo "[1/5] Multi-seed B0/B3/B4 gate-only diagnostic"
-DIAGNOSTIC_OUTPUT_DIR="$FIVE_OUTPUT_DIR/01_multiseed" \
-DIAGNOSTIC_MODELS="$FIVE_MODELS" \
-DIAGNOSTIC_SEEDS="$FIVE_SEEDS" \
-DIAGNOSTIC_EPOCHS="$FIVE_EPOCHS" \
-DIAGNOSTIC_PATIENCE="$FIVE_PATIENCE" \
-DIAGNOSTIC_GATE_LR="$FIVE_GATE_LR" \
-DIAGNOSTIC_SELECTION_SPLIT="valid" \
-DIAGNOSTIC_SELECTION_METRIC="$FIVE_SELECTION_METRIC" \
-DIAGNOSTIC_INITIAL_GATE="$FIVE_INITIAL_GATE" \
-DIAGNOSTIC_LAMBDA_IMPACT="$FIVE_LAMBDA_IMPACT" \
-DIAGNOSTIC_GATE_MODALITIES="text audio visual" \
-bash "$SCRIPT_DIR/run_e3_gate_only_diagnostic.sh"
+if [[ "$FIVE_REUSE_COMPLETED_RUNS" == "1" \
+      && -s "$FIVE_OUTPUT_DIR/01_multiseed/E3/manifest.json" ]]; then
+  echo "Reusing completed step 1"
+else
+  DIAGNOSTIC_OUTPUT_DIR="$FIVE_OUTPUT_DIR/01_multiseed" \
+  DIAGNOSTIC_MODELS="$FIVE_MODELS" \
+  DIAGNOSTIC_SEEDS="$FIVE_SEEDS" \
+  DIAGNOSTIC_EPOCHS="$FIVE_EPOCHS" \
+  DIAGNOSTIC_PATIENCE="$FIVE_PATIENCE" \
+  DIAGNOSTIC_GATE_LR="$FIVE_GATE_LR" \
+  DIAGNOSTIC_SELECTION_SPLIT="valid" \
+  DIAGNOSTIC_SELECTION_METRIC="$FIVE_SELECTION_METRIC" \
+  DIAGNOSTIC_INITIAL_GATE="$FIVE_INITIAL_GATE" \
+  DIAGNOSTIC_LAMBDA_IMPACT="$FIVE_LAMBDA_IMPACT" \
+  DIAGNOSTIC_GATE_MODALITIES="text audio visual" \
+  bash "$SCRIPT_DIR/run_e3_gate_only_diagnostic.sh"
+fi
 
 echo "[2/5] Cross-seed paired deltas and per-modality gate statistics"
 "$PYTHON" "$SCRIPT_DIR/summarize_e3_diagnostic.py" \
@@ -78,14 +84,19 @@ for seed in "${FIVE_SEED_ARRAY[@]}"; do
   done
 done
 mkdir -p "$FIVE_OUTPUT_DIR/03_teacher_fit"
-"$PYTHON" "$SCRIPT_DIR/evaluate_gate_teacher_fit.py" \
-  "${MODEL_ARGS[@]}" \
-  --trained-checkpoints "${FIT_CHECKPOINTS[@]}" \
-  --teacher-file "$VALID_TEACHER" \
-  --output-dir "$FIVE_OUTPUT_DIR/03_teacher_fit" \
-  --split valid \
-  --precision-k 1 3 5 \
-  --max-conversations "$MAX_CONVERSATIONS"
+if [[ "$FIVE_REUSE_COMPLETED_RUNS" == "1" \
+      && -s "$FIVE_OUTPUT_DIR/03_teacher_fit/teacher_fit_manifest.json" ]]; then
+  echo "Reusing completed step 3"
+else
+  "$PYTHON" "$SCRIPT_DIR/evaluate_gate_teacher_fit.py" \
+    "${MODEL_ARGS[@]}" \
+    --trained-checkpoints "${FIT_CHECKPOINTS[@]}" \
+    --teacher-file "$VALID_TEACHER" \
+    --output-dir "$FIVE_OUTPUT_DIR/03_teacher_fit" \
+    --split valid \
+    --precision-k 1 3 5 \
+    --max-conversations "$MAX_CONVERSATIONS"
+fi
 
 echo "[4/5] Initial-gate x impact-loss-weight sweep (validation selection only)"
 read -r -a SWEEP_GATE_ARRAY <<< "$SWEEP_INITIAL_GATES"
@@ -94,6 +105,11 @@ read -r -a SWEEP_MODEL_ARRAY <<< "$SWEEP_MODELS"
 for initial_gate in "${SWEEP_GATE_ARRAY[@]}"; do
   for lambda_impact in "${SWEEP_LAMBDA_ARRAY[@]}"; do
     run_dir="$FIVE_OUTPUT_DIR/04_sweep/gate_${initial_gate}_lambda_${lambda_impact}"
+    if [[ "$FIVE_REUSE_COMPLETED_RUNS" == "1" \
+          && -s "$run_dir/E3/manifest.json" ]]; then
+      echo "Reusing completed sweep: $run_dir"
+      continue
+    fi
     # lambda_impact has no effect on B3, so run B3 only once per initial gate.
     RUN_SWEEP_MODELS=()
     for model in "${SWEEP_MODEL_ARRAY[@]}"; do
@@ -123,18 +139,23 @@ done
   --sweep-dir "$FIVE_OUTPUT_DIR/04_sweep"
 
 echo "[5/5] Text-only gates; audio and visual gates fixed exactly at 1"
-DIAGNOSTIC_OUTPUT_DIR="$FIVE_OUTPUT_DIR/05_text_only" \
-DIAGNOSTIC_MODELS="B3 B4" \
-DIAGNOSTIC_SEEDS="$FIVE_SEEDS" \
-DIAGNOSTIC_EPOCHS="$FIVE_EPOCHS" \
-DIAGNOSTIC_PATIENCE="$FIVE_PATIENCE" \
-DIAGNOSTIC_GATE_LR="$FIVE_GATE_LR" \
-DIAGNOSTIC_SELECTION_SPLIT="valid" \
-DIAGNOSTIC_SELECTION_METRIC="$FIVE_SELECTION_METRIC" \
-DIAGNOSTIC_INITIAL_GATE="$FIVE_INITIAL_GATE" \
-DIAGNOSTIC_LAMBDA_IMPACT="$FIVE_LAMBDA_IMPACT" \
-DIAGNOSTIC_GATE_MODALITIES="text" \
-bash "$SCRIPT_DIR/run_e3_gate_only_diagnostic.sh"
+if [[ "$FIVE_REUSE_COMPLETED_RUNS" == "1" \
+      && -s "$FIVE_OUTPUT_DIR/05_text_only/E3/manifest.json" ]]; then
+  echo "Reusing completed step 5"
+else
+  DIAGNOSTIC_OUTPUT_DIR="$FIVE_OUTPUT_DIR/05_text_only" \
+  DIAGNOSTIC_MODELS="B3 B4" \
+  DIAGNOSTIC_SEEDS="$FIVE_SEEDS" \
+  DIAGNOSTIC_EPOCHS="$FIVE_EPOCHS" \
+  DIAGNOSTIC_PATIENCE="$FIVE_PATIENCE" \
+  DIAGNOSTIC_GATE_LR="$FIVE_GATE_LR" \
+  DIAGNOSTIC_SELECTION_SPLIT="valid" \
+  DIAGNOSTIC_SELECTION_METRIC="$FIVE_SELECTION_METRIC" \
+  DIAGNOSTIC_INITIAL_GATE="$FIVE_INITIAL_GATE" \
+  DIAGNOSTIC_LAMBDA_IMPACT="$FIVE_LAMBDA_IMPACT" \
+  DIAGNOSTIC_GATE_MODALITIES="text" \
+  bash "$SCRIPT_DIR/run_e3_gate_only_diagnostic.sh"
+fi
 "$PYTHON" "$SCRIPT_DIR/summarize_e3_diagnostic.py" \
   --e3-dir "$FIVE_OUTPUT_DIR/05_text_only/E3"
 

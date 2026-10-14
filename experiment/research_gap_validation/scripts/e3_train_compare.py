@@ -796,8 +796,18 @@ def train(args: argparse.Namespace) -> None:
     write_csv(output / "transition_subset_metrics.csv", transition_rows)
     write_csv(output / "classwise_f1.csv", classwise_rows)
     write_csv(output / "test_predictions.csv", all_predictions)
-    write_csv(output / "paired_deltas.csv",
-              _paired_deltas(prediction_groups, args.bootstrap_reps, args.seeds[0]))
+    paired_delta_rows = _paired_deltas(
+        prediction_groups, args.bootstrap_reps, args.seeds[0]
+    )
+    paired_delta_path = output / "paired_deltas.csv"
+    if paired_delta_rows:
+        write_csv(paired_delta_path, paired_delta_rows)
+    else:
+        # A single-model run is valid (for example one B4 sweep point), but it
+        # has no within-run model pair from which a paired delta can be formed.
+        if paired_delta_path.exists():
+            paired_delta_path.unlink()
+        print("E3 paired deltas skipped: fewer than two comparable models", flush=True)
     write_csv(output / "ablation_results.csv", [{
         "model": model_id,
         "placement": ("none" if model_id in ("B0", "B5") else
@@ -843,6 +853,7 @@ def train(args: argparse.Namespace) -> None:
             args.selection_split == "test"
         ),
         "checkpoints": run_manifest,
+        "paired_delta_rows": len(paired_delta_rows),
         "smoke_limited": bool(args.max_batches),
     })
 

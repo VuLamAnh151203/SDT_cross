@@ -181,6 +181,9 @@ bash scripts/run_e3_five_diagnostics.sh
 
 Mặc định pipeline dùng 5 seed `2024..2028`, chọn checkpoint bằng validation
 weighted-F1 và tái sử dụng các teacher trong `outputs/full_run/manifests/`.
+Nếu bị ngắt giữa chừng, chạy lại cùng lệnh sẽ bỏ qua các run đã có manifest hoàn
+chỉnh (`FIVE_REUSE_COMPLETED_RUNS=1`, là mặc định). Đặt biến này bằng `0` để ép
+chạy lại toàn bộ.
 Smoke test có thể chạy bằng:
 
 ```bash
