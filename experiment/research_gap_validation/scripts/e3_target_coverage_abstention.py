@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import math
 import sys
 from dataclasses import dataclass
@@ -28,6 +29,7 @@ from e3_three_class_abstention import (
 )
 from impact_core import load_experiment, seed_everything
 from reliability_model import ReliabilitySDT
+from d1_prepare_edge_dataset import FEATURE_NAMES
 
 
 @dataclass(frozen=True)
@@ -63,6 +65,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--gpu-id", type=int, default=0)
     parser.add_argument("--allow-smoke-checkpoint", action="store_true")
     parser.add_argument("--renormalize-attention", action="store_true")
+    parser.add_argument("--target-model", action="store_true",
+                        help="Rank targets with a train-only target classifier")
+    parser.add_argument("--target-improvement-eps", type=float, default=0.05,
+                        help="Train target label: best edge delta-NLL < -epsilon")
     return parser.parse_args(argv)
 
 
@@ -96,6 +102,52 @@ def threshold_selection(
     rows: Sequence[tuple[float, str, int]], cutoff: float,
 ) -> set[tuple[str, int]]:
     return {(conversation, target) for score, conversation, target in rows if score >= cutoff}
+
+
+def target_level_dataset(path: Path, modality: str, epsilon: float):
+    """Aggregate observable edge features; labels never enter valid/test features."""
+    groups: dict[tuple[str, str, int], list[tuple[np.ndarray, float]]] = {}
+    with path.open("r", newline="", encoding="utf-8") as stream:
+        for row in csv.DictReader(stream):
+            if row["modality"] != modality:
+                continue
+            key = (row["predictor_split"], row["conversation_id"], int(row["target_idx"]))
+            vector = np.asarray([float(row[name]) for name in FEATURE_NAMES], dtype=np.float64)
+            groups.setdefault(key, []).append((vector, float(row["signed_impact"])))
+    result = {split: {"keys": [], "x": [], "y": []} for split in ("train", "valid", "test")}
+    for (split, conversation, target), values in groups.items():
+        vectors = np.stack([value[0] for value in values])
+        # Distribution summaries plus candidate count capture max-score/length bias.
+        features = np.concatenate((vectors.mean(0), vectors.std(0), vectors.min(0),
+                                   vectors.max(0), [math.log1p(len(vectors))]))
+        result[split]["keys"].append((conversation, target))
+        result[split]["x"].append(features)
+        result[split]["y"].append(int(min(value[1] for value in values) < -epsilon))
+    for split in result:
+        result[split]["x"] = np.asarray(result[split]["x"], dtype=np.float64)
+        result[split]["y"] = np.asarray(result[split]["y"], dtype=np.int64)
+    return result
+
+
+def fit_target_scores(dataset, seed: int):
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.pipeline import make_pipeline
+    from sklearn.preprocessing import StandardScaler
+    if len(np.unique(dataset["train"]["y"])) != 2:
+        raise ValueError("Target labels contain only one class; adjust --target-improvement-eps")
+    model = make_pipeline(StandardScaler(), LogisticRegression(
+        class_weight="balanced", max_iter=1000, random_state=seed,
+    ))
+    model.fit(dataset["train"]["x"], dataset["train"]["y"])
+    output = {}
+    for split in ("valid", "test"):
+        scores = model.predict_proba(dataset[split]["x"])[:, 1]
+        output[split] = sorted(
+            [(float(score), str(key[0]), int(key[1]))
+             for score, key in zip(scores, dataset[split]["keys"])],
+            key=lambda row: (-row[0], row[1], row[2]),
+        )
+    return output
 
 
 def run(args: argparse.Namespace) -> Path:
@@ -147,6 +199,7 @@ def run(args: argparse.Namespace) -> Path:
     probabilities_by_seed = {}
     cutoffs: dict[tuple[int, float], float] = {}
     artifacts = {}
+    target_rankings = {}
     checkpoints = []
     for seed in args.seeds:
         checkpoint = d1_dir / "checkpoints" / f"three_class_seed{seed}.pt"
@@ -156,8 +209,14 @@ def run(args: argparse.Namespace) -> Path:
             args.predictor_batch_size) for split in ("valid", "test")}
         probabilities_by_seed[seed] = probabilities
         artifacts[seed] = artifact
+        if args.target_model:
+            target_data = target_level_dataset(
+                dataset_path, args.modality, args.target_improvement_eps
+            )
+            target_rankings[seed] = fit_target_scores(target_data, seed)
         checkpoints.append(str(checkpoint))
-        ranked = target_scores(probabilities["valid"])
+        ranked = (target_rankings[seed]["valid"] if args.target_model
+                  else target_scores(probabilities["valid"]))
         for configuration in configurations:
             if configuration.identity:
                 metrics, cutoff = dict(baseline_valid), math.inf
@@ -201,7 +260,9 @@ def run(args: argparse.Namespace) -> Path:
             metrics, predictions, cutoff = dict(baseline_test), list(baseline_predictions), math.inf
         else:
             cutoff = cutoffs[(seed, selected.coverage)]
-            allowed = threshold_selection(target_scores(probabilities_by_seed[seed]["test"]), cutoff)
+            ranked_test = (target_rankings[seed]["test"] if args.target_model
+                           else target_scores(probabilities_by_seed[seed]["test"]))
+            allowed = threshold_selection(ranked_test, cutoff)
             metrics, predictions = _evaluate(
                 wrapper, loaders["test"], probabilities_by_seed[seed]["test"],
                 active_gate(selected.alpha), args.modality, experiment.device,
@@ -265,7 +326,9 @@ def run(args: argparse.Namespace) -> Path:
         "d1_dataset_sha256": sha256(dataset_path), "d1_checkpoints": checkpoints,
         "seeds": list(args.seeds), "coverages": coverages, "alphas": alphas,
         "selection_split": "valid", "selection_metric": args.selection_metric,
-        "target_score": "max_source(P(harmful)-P(beneficial))",
+        "target_score": ("train-only logistic target classifier" if args.target_model
+                         else "max_source(P(harmful)-P(beneficial))"),
+        "target_improvement_eps": args.target_improvement_eps if args.target_model else None,
         "calibration": "per-seed validation quantile; fixed numeric cutoff applied to test",
         "test_used_for_training_or_selection": False,
     })

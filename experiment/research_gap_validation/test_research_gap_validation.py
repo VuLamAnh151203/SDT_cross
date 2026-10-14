@@ -20,7 +20,8 @@ from d1_prepare_edge_dataset import predictor_splits
 from e1_mixed_contribution import aggregate_pairs
 from e3_three_class_abstention import GateConfiguration, selective_edge_gate
 from e3_target_coverage_abstention import (
-    target_scores, threshold_selection, validation_coverage_selection,
+    target_level_dataset, target_scores, threshold_selection,
+    validation_coverage_selection,
 )
 from e3_train_compare import ImpactTeacher
 from generate_train_edge_teacher import select_teacher_action
@@ -226,6 +227,24 @@ class ResearchGapValidationTests(unittest.TestCase):
         self.assertEqual(decisions[0]["intervened"], 0)
         self.assertEqual(decisions[1]["intervened"], 1)
         self.assertEqual(float(gate[0, 1, 0]), 1.0)
+
+    def test_target_level_dataset_uses_train_labels_and_aggregates_edges(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "pairs.csv"
+            fields = ["predictor_split", "conversation_id", "target_idx", "modality",
+                      "signed_impact", *FEATURE_NAMES]
+            with path.open("w", newline="", encoding="utf-8") as stream:
+                writer = csv.DictWriter(stream, fieldnames=fields)
+                writer.writeheader()
+                for split in ("train", "valid", "test"):
+                    for impact in (-0.02, 0.01):
+                        writer.writerow({"predictor_split": split, "conversation_id": split,
+                                         "target_idx": 0, "modality": "text",
+                                         "signed_impact": impact,
+                                         **{name: 1.0 for name in FEATURE_NAMES}})
+            data = target_level_dataset(path, "text", 0.001)
+            self.assertEqual(data["train"]["x"].shape[0], 1)
+            self.assertEqual(int(data["train"]["y"][0]), 1)
 
 
 if __name__ == "__main__":
