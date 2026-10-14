@@ -90,6 +90,37 @@ class ResearchGapValidationTests(unittest.TestCase):
             self.assertAlmostEqual(target, 0.5)
             self.assertAlmostEqual(weight, 0.4)
 
+    def test_edge_teacher_strong_impact_filter_uses_decision_margin(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "teacher.csv"
+            with path.open("w", newline="", encoding="utf-8") as stream:
+                writer = csv.DictWriter(stream, fieldnames=(
+                    "conversation_id", "target_idx", "source_idx", "modality",
+                    "teacher_gate", "teacher_weight", "teacher_decision_margin",
+                ))
+                writer.writeheader()
+                writer.writerows((
+                    {
+                        "conversation_id": "c", "target_idx": 1, "source_idx": 0,
+                        "modality": "text", "teacher_gate": 0.5,
+                        "teacher_weight": 0.1, "teacher_decision_margin": 0.001,
+                    },
+                    {
+                        "conversation_id": "c", "target_idx": 0, "source_idx": 1,
+                        "modality": "text", "teacher_gate": 0.75,
+                        "teacher_weight": 1.0, "teacher_decision_margin": 0.02,
+                    },
+                ))
+            teacher = ImpactTeacher(
+                path, {"c"}, 1e-4, 0.75, 0.01, min_margin=0.01
+            )
+            self.assertNotIn(("c", 1, 0, 0), teacher.values)
+            self.assertIn(("c", 0, 1, 0), teacher.values)
+            summary = teacher.summary()
+            self.assertEqual(summary["teacher_raw_pair_count"], 2)
+            self.assertEqual(summary["teacher_filtered_weak_count"], 1)
+            self.assertEqual(summary["teacher_pair_count"], 1)
+
     def test_edge_teacher_selects_aligned_suppression_action(self):
         gate, weight, decision, margin = select_teacher_action(
             {0.0: 0.75, 0.5: 0.70, 0.75: 0.72, 1.0: 0.80},

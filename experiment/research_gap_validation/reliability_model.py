@@ -213,6 +213,31 @@ class ReliabilitySDT(nn.Module):
         diagonal = torch.eye(length, dtype=torch.bool, device=edge_gate.device)
         return torch.where(diagonal[None, :, :, None], torch.ones_like(edge_gate), edge_gate)
 
+    @staticmethod
+    def _conservative_top_k(edge_gate: torch.Tensor, valid: torch.Tensor,
+                            top_k: int) -> torch.Tensor:
+        """Apply only the K lowest learned gates per target and modality.
+
+        Ranking uses the dense learned gate. Every non-selected, padded, and
+        self edge is restored to identity, so this changes the intervention
+        budget without retraining the ranking network.
+        """
+        if top_k <= 0:
+            return edge_gate
+        length = edge_gate.size(2)
+        diagonal = torch.eye(length, dtype=torch.bool, device=edge_gate.device)
+        candidates = (valid[:, :, None] & valid[:, None, :]
+                      & ~diagonal[None]).unsqueeze(-1).expand_as(edge_gate)
+        scores = torch.where(
+            candidates, edge_gate, torch.full_like(edge_gate, float("inf"))
+        )
+        count = min(int(top_k), length)
+        indices = torch.topk(scores, count, dim=2, largest=False).indices
+        selected = torch.zeros_like(candidates)
+        selected.scatter_(2, indices, True)
+        selected &= candidates
+        return torch.where(selected, edge_gate, torch.ones_like(edge_gate))
+
     @contextmanager
     def _runtime_hooks(self, edge_gate, late_gate, active_branches, capture_attention):
         handles = []
@@ -261,7 +286,8 @@ class ReliabilitySDT(nn.Module):
                 fixed_edge_gate: torch.Tensor | None = None,
                 fixed_late_gate: torch.Tensor | None = None,
                 active_branches: Sequence[str] | None = None,
-                capture_attention: bool = False):
+                capture_attention: bool = False,
+                pair_gate_top_k: int = 0):
         modality_gate, pair_gate = self._learned_gates(textf, visuf, acouf, u_mask, qmask)
         edge_gate, late_gate = fixed_edge_gate, fixed_late_gate
         if edge_gate is None:
@@ -269,7 +295,9 @@ class ReliabilitySDT(nn.Module):
                 length = u_mask.size(1)
                 edge_gate = modality_gate.unsqueeze(2).expand(-1, -1, length, -1)
             elif self.model_id in ("B3", "B4", "B6"):
-                edge_gate = pair_gate
+                edge_gate = self._conservative_top_k(
+                    pair_gate, u_mask.bool(), pair_gate_top_k
+                )
         if late_gate is None and self.model_id == "B1":
             late_gate = modality_gate
         with self._runtime_hooks(edge_gate, late_gate, active_branches, capture_attention):

@@ -73,6 +73,19 @@ class ReliabilityModelTests(unittest.TestCase):
         self.assertTrue(torch.all(gates[..., 2] == 1.0))
         self.assertTrue(torch.any(gates[..., 0] < 1.0))
 
+    def test_conservative_top_k_applies_at_most_one_text_edge_per_target(self):
+        from reliability_model import ReliabilitySDT
+        wrapper = ReliabilitySDT(
+            self._base(), "B3", initial_gate=0.9, gate_modalities=("text",)
+        ).eval()
+        with torch.inference_mode():
+            output = wrapper(*self._inputs(), pair_gate_top_k=1)
+        applied = output["edge_gate_applied"][0, ..., 0]
+        for target in range(3):
+            nonself = torch.arange(3) != target
+            self.assertLessEqual(int((applied[target, nonself] < 1.0).sum()), 1)
+        self.assertTrue(torch.all(output["edge_gate_applied"][..., 1:] == 1.0))
+
 
 if __name__ == "__main__":
     unittest.main()

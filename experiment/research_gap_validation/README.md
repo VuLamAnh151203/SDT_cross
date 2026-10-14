@@ -197,6 +197,34 @@ source-target edge. Các lần sau script tự reuse
 `outputs/full_run/manifests/train_edge_impact_teacher.csv`. Đặt
 `B4_REGENERATE_TEACHER=1` nếu cần sinh lại.
 
+## Strong-impact filtering và conservative top-K
+
+Diagnostic này test hai biến thể B4 text-only mà không chạy lại E1/E2:
+
+- strong-impact filtering chỉ giữ teacher edge có
+  `teacher_decision_margin >= impact_min_margin`;
+- conservative top-K chỉ áp dụng K gate nhỏ nhất cho mỗi target/modality;
+  `K=0` là dense-gating baseline.
+
+```bash
+bash scripts/run_e3_strong_topk_diagnostic.sh
+```
+
+Mặc định script sweep margin `0 0.001 0.005 0.01`, K `0 1 3 5` và 5
+seed. Margin và K được chọn bằng validation weighted-F1; test chỉ được chạy
+cho cấu hình đã thắng validation. Có thể smoke-test nhanh bằng:
+
+```bash
+STRONG_SEEDS="2024" STRONG_MIN_MARGINS="0 0.005 0.01" \
+  STRONG_EPOCHS=2 MAX_BATCHES=1 \
+  bash scripts/run_e3_strong_topk_diagnostic.sh
+```
+
+Kết quả chính nằm trong
+`outputs/full_run/diagnostics/strong_impact_topk/selection/`, bao gồm
+`topk_validation_summary.csv`, `topk_selected_config.csv`,
+`topk_selected_test_summary.csv` và `topk_selected_paired_deltas.csv`.
+
 ## Outputs
 
 ```text
