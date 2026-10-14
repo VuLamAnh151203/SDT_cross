@@ -1,0 +1,11 @@
+{
+  "warning": "Every fold needs a checkpoint whose training data excludes that fold's test session.",
+  "folds": [
+    {
+      "name": "session_5",
+      "checkpoint": "/path/to/session5_heldout_checkpoint.pt",
+      "feature_path": "/path/to/iemocap_multimodal_features.pkl",
+      "output_dir": "/path/to/outputs/session_5"
+    }
+  ]
+}
