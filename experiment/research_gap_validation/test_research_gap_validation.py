@@ -18,6 +18,7 @@ from common import classification_metrics, distance_bin, margin_bin
 from d1_harm_learnability import precision_at_k, spearman
 from d1_prepare_edge_dataset import predictor_splits
 from e1_mixed_contribution import aggregate_pairs
+from e3_three_class_abstention import GateConfiguration, selective_edge_gate
 from e3_train_compare import ImpactTeacher
 from generate_train_edge_teacher import select_teacher_action
 
@@ -170,6 +171,36 @@ class ResearchGapValidationTests(unittest.TestCase):
         self.assertAlmostEqual(rows[0]["macro_random_precision"], 0.5)
         self.assertAlmostEqual(rows[0]["macro_precision_at_k"], 1.0)
         self.assertAlmostEqual(rows[0]["macro_precision_lift"], 2.0)
+
+    def test_three_class_abstention_keeps_identity_below_threshold(self):
+        probabilities = np.full((3, 3, 3), np.nan, dtype=np.float32)
+        probabilities[0, 1] = [0.70, 0.20, 0.10]
+        probabilities[0, 2] = [0.60, 0.20, 0.20]
+        probabilities[1, 0] = [0.40, 0.50, 0.10]
+        probabilities[1, 2] = [0.30, 0.40, 0.30]
+        probabilities[2, 0] = [0.45, 0.40, 0.15]
+        probabilities[2, 1] = [0.35, 0.40, 0.25]
+        gate, decisions = selective_edge_gate(
+            probabilities, GateConfiguration(0.8, 0.2, 1.0), 0,
+        )
+        np.testing.assert_array_equal(gate, np.ones_like(gate))
+        self.assertEqual(sum(int(row["intervened"]) for row in decisions), 0)
+
+    def test_three_class_abstention_selects_one_edge_and_uses_soft_gate(self):
+        probabilities = np.full((3, 3, 3), np.nan, dtype=np.float32)
+        probabilities[0, 1] = [0.70, 0.20, 0.10]  # margin 0.60: selected
+        probabilities[0, 2] = [0.75, 0.20, 0.05]  # margin 0.70: selected instead
+        probabilities[1, 0] = [0.40, 0.50, 0.10]
+        probabilities[1, 2] = [0.30, 0.40, 0.30]
+        probabilities[2, 0] = [0.45, 0.40, 0.15]
+        probabilities[2, 1] = [0.35, 0.40, 0.25]
+        gate, decisions = selective_edge_gate(
+            probabilities, GateConfiguration(0.7, 0.5, 0.5), 0,
+        )
+        self.assertEqual(decisions[0]["selected_source_idx"], 2)
+        self.assertAlmostEqual(float(gate[0, 2, 0]), 0.625)
+        self.assertEqual(int(np.sum(gate[:, :, 0] < 1.0)), 1)
+        np.testing.assert_array_equal(gate[:, :, 1:], np.ones_like(gate[:, :, 1:]))
 
 
 if __name__ == "__main__":

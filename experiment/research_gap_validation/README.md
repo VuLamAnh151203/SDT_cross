@@ -147,6 +147,36 @@ Kết quả chính thức nên dùng `SEEDS="2024 2025 2026 2027 2028"` và
 `BOOTSTRAP_REPS=2000`. Smoke test có thể giảm seeds, epochs, conversations và
 bootstrap repetitions; manifest luôn ghi rõ các giới hạn này.
 
+### Three-class selective gating with abstention
+
+Sau khi D1 tạo đủ checkpoint `three_class_seed*.pt`, chạy diagnostic selective
+gating bằng:
+
+```bash
+bash scripts/run_e3_three_class_abstention.sh
+```
+
+Predictor xếp hạng edge bằng `P(harmful) - P(beneficial)`. Mỗi target chỉ được
+thay đổi tối đa một text propagation edge và giữ identity nếu edge tốt nhất
+không vượt cả probability threshold lẫn class-margin threshold. Một cấu hình
+identity/no-op được đưa vào grid để validation có thể từ chối mọi intervention.
+Một bộ `(tau_probability, tau_margin, alpha)` chung được chọn bằng mean
+validation weighted-F1 của tất cả seed; test chỉ được đánh giá sau bước chọn đó.
+
+Outputs chính:
+
+```text
+outputs/full_run/diagnostics/three_class_abstention/
+  validation_grid.csv
+  validation_summary.csv
+  selected_config.csv
+  test_runs.csv
+  test_summary.csv
+  paired_deltas.csv
+  test_predictions.csv
+  manifest.json
+```
+
 ## Input bắt buộc
 
 E1 tái sử dụng hai raw files của Experiment 1:
