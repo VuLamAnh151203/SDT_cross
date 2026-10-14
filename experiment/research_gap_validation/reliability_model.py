@@ -15,6 +15,8 @@ import torch.nn as nn
 
 
 MODALITIES = ("t", "a", "v")
+MODALITY_NAMES = ("text", "audio", "visual")
+MODALITY_NAME_TO_INDEX = {name: index for index, name in enumerate(MODALITY_NAMES)}
 BRANCHES = ("t_t", "a_t", "v_t", "a_a", "t_a", "v_a", "v_v", "t_v", "a_v")
 SOURCE_MODALITY = {name: MODALITIES.index(name.split("_")[0]) for name in BRANCHES}
 
@@ -115,13 +117,25 @@ class ReliabilitySDT(nn.Module):
 
     def __init__(self, base: nn.Module, model_id: str, gate_hidden: int = 64,
                  initial_gate: float = 0.99, capacity_hidden: int = 64,
-                 renormalize_attention: bool = False):
+                 renormalize_attention: bool = False,
+                 gate_modalities: Sequence[str] = MODALITY_NAMES):
         super().__init__()
         if model_id not in {f"B{index}" for index in range(7)}:
             raise ValueError(f"Unknown model ID: {model_id}")
         self.base = base
         self.model_id = model_id
         self.renormalize_attention = bool(renormalize_attention)
+        unknown_modalities = sorted(set(gate_modalities).difference(MODALITY_NAMES))
+        if unknown_modalities:
+            raise ValueError(f"Unknown gate modalities: {unknown_modalities}")
+        self.gate_modalities = tuple(
+            name for name in MODALITY_NAMES if name in set(gate_modalities)
+        )
+        if model_id in ("B1", "B2", "B3", "B4", "B6") and not self.gate_modalities:
+            raise ValueError("At least one gate modality is required for a gated model")
+        self.active_gate_indices = tuple(
+            MODALITY_NAME_TO_INDEX[name] for name in self.gate_modalities
+        )
         hidden = int(base.all_output_layer.in_features)
         self.hidden_dim = hidden
         self.gate_hidden = int(gate_hidden)
@@ -180,12 +194,18 @@ class ReliabilitySDT(nn.Module):
         features = self._project_inputs(textf, visuf, acouf)
         target_summary = torch.cat(features, dim=-1)
         if self.modality_gate is not None:
-            return self.modality_gate(target_summary), None
+            return self._force_inactive_identity(self.modality_gate(target_summary)), None
         if self.pair_gate is not None:
             speakers = qmask.argmax(dim=-1)
             pair = self.pair_gate(target_summary, features, speakers, u_mask.bool())
-            return None, pair
+            return None, self._force_inactive_identity(pair)
         return None, None
+
+    def _force_inactive_identity(self, gates: torch.Tensor) -> torch.Tensor:
+        """Keep non-selected modalities at exact identity with zero gradient."""
+        active = gates.new_zeros(3)
+        active[list(self.active_gate_indices)] = 1.0
+        return gates * active + (1.0 - active)
 
     @staticmethod
     def _force_self_identity(edge_gate: torch.Tensor) -> torch.Tensor:

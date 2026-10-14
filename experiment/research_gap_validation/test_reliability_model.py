@@ -61,6 +61,18 @@ class ReliabilityModelTests(unittest.TestCase):
             self.assertTrue(torch.all(after[:, :, 1, 0] == 0))
             torch.testing.assert_close(before[:, :, 2, 2], after[:, :, 2, 2])
 
+    def test_text_only_gate_forces_audio_visual_to_identity(self):
+        from reliability_model import ReliabilitySDT
+        wrapper = ReliabilitySDT(
+            self._base(), "B3", initial_gate=0.9, gate_modalities=("text",)
+        ).eval()
+        with torch.inference_mode():
+            output = wrapper(*self._inputs())
+        gates = output["reliability_pair_gate"]
+        self.assertTrue(torch.all(gates[..., 1] == 1.0))
+        self.assertTrue(torch.all(gates[..., 2] == 1.0))
+        self.assertTrue(torch.any(gates[..., 0] < 1.0))
+
 
 if __name__ == "__main__":
     unittest.main()

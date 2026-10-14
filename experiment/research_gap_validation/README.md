@@ -172,6 +172,23 @@ cd /path/to/SDT_cross/experiment/research_gap_validation
 bash scripts/run_e3_b4_fixed.sh
 ```
 
+Pipeline chẩn đoán B3/B4 gồm 5 bước (multi-seed, thống kê từng modality,
+teacher-fit trên validation, sweep hyperparameter và text-only gate):
+
+```bash
+bash scripts/run_e3_five_diagnostics.sh
+```
+
+Mặc định pipeline dùng 5 seed `2024..2028`, chọn checkpoint bằng validation
+weighted-F1 và tái sử dụng các teacher trong `outputs/full_run/manifests/`.
+Smoke test có thể chạy bằng:
+
+```bash
+OUTPUT_DIR="$PWD/outputs/smoke_five" FIVE_SEEDS="2024" FIVE_EPOCHS=2 \
+  MAX_CONVERSATIONS=2 MAX_BATCHES=1 \
+  bash scripts/run_e3_five_diagnostics.sh
+```
+
 Teacher edge khởi tạo có thể mất nhiều thời gian như E2 vì phải quét từng
 source-target edge. Các lần sau script tự reuse
 `outputs/full_run/manifests/train_edge_impact_teacher.csv`. Đặt

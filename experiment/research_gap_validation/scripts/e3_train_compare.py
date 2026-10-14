@@ -58,6 +58,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--capacity-hidden", type=int, default=0,
                         help="0 chooses the closest B5 residual width to B3 gate parameters")
     parser.add_argument("--initial-gate", type=float, default=0.99)
+    parser.add_argument(
+        "--gate-modalities", nargs="+", choices=tuple(MODALITY_INDEX),
+        default=tuple(MODALITY_INDEX),
+        help=("Modalities whose reliability gates may change. Unselected modalities "
+              "are fixed exactly at gate=1."),
+    )
     parser.add_argument("--lambda-identity", type=float, default=1e-3)
     parser.add_argument(
         "--lambda-impact", type=float, default=0.02,
@@ -227,8 +233,11 @@ def _loss(model_id, output, labels, valid, class_weights, args, teacher,
     auxiliary = emotion.new_zeros(())
     identity = emotion.new_zeros(())
     gates = output["reliability_pair_gate"]
+    modality_mask = torch.zeros(3, dtype=torch.bool, device=valid.device)
+    modality_mask[[MODALITY_INDEX[name] for name in args.gate_modalities]] = True
     if gates is not None:
-        pair_mask = _valid_pair_mask(valid).unsqueeze(-1).expand_as(gates)
+        pair_mask = (_valid_pair_mask(valid).unsqueeze(-1).expand_as(gates)
+                     & modality_mask.view(1, 1, 1, 3))
         identity = ((1.0 - gates[pair_mask]) ** 2).mean()
         if model_id == "B4":
             targets, teacher_weights, teacher_mask = teacher.batch(
@@ -247,11 +256,14 @@ def _loss(model_id, output, labels, valid, class_weights, args, teacher,
                 auxiliary = (errors * weights).sum() / weights.sum().clamp_min(1e-12)
         elif model_id == "B6":
             targets, relevance_mask = _relevance_proxy(speakers, valid)
+            relevance_mask = (relevance_mask
+                              & modality_mask.view(1, 1, 1, 3))
             auxiliary = F.binary_cross_entropy(gates[relevance_mask],
                                                targets[relevance_mask])
     modality_gates = output["reliability_modality_gate"]
     if modality_gates is not None:
-        expanded = valid.unsqueeze(-1).expand_as(modality_gates)
+        expanded = (valid.unsqueeze(-1).expand_as(modality_gates)
+                    & modality_mask.view(1, 1, 3))
         identity = ((1.0 - modality_gates[expanded]) ** 2).mean()
     auxiliary_weight = (
         args.lambda_impact if model_id == "B4"
@@ -293,10 +305,16 @@ def run_epoch(model, model_id, loader, experiment, args, teacher,
             pair_gate = output["reliability_pair_gate"]
             modality_gate = output["reliability_modality_gate"]
             if pair_gate is not None:
-                active_mask = _valid_pair_mask(valid).unsqueeze(-1).expand_as(pair_gate)
+                modality_mask = torch.zeros(3, dtype=torch.bool, device=valid.device)
+                modality_mask[list(model.active_gate_indices)] = True
+                active_mask = (_valid_pair_mask(valid).unsqueeze(-1).expand_as(pair_gate)
+                               & modality_mask.view(1, 1, 1, 3))
                 active_gates = pair_gate[active_mask].detach()
             elif modality_gate is not None:
-                active_mask = valid.unsqueeze(-1).expand_as(modality_gate)
+                modality_mask = torch.zeros(3, dtype=torch.bool, device=valid.device)
+                modality_mask[list(model.active_gate_indices)] = True
+                active_mask = (valid.unsqueeze(-1).expand_as(modality_gate)
+                               & modality_mask.view(1, 1, 3))
                 active_gates = modality_gate[active_mask].detach()
             else:
                 active_gates = None
@@ -366,15 +384,27 @@ def run_epoch(model, model_id, loader, experiment, args, teacher,
                         if pair_gate is not None:
                             active = pair_gate[batch_index, target, :length]
                             nonself = torch.arange(length) != target
-                            row["gate_mean"] = float(active[nonself].mean())
-                            row["gate_min"] = float(active[nonself].min())
+                            selected = active[nonself][:, list(model.active_gate_indices)]
+                            row["gate_mean"] = float(selected.mean())
+                            row["gate_min"] = float(selected.min())
+                            for name, index in MODALITY_INDEX.items():
+                                values = active[nonself, index]
+                                row[f"gate_mean_{name}"] = float(values.mean())
+                                row[f"gate_min_{name}"] = float(values.min())
                         elif modality_gate is not None:
                             active = modality_gate[batch_index, target]
-                            row["gate_mean"] = float(active.mean())
-                            row["gate_min"] = float(active.min())
+                            selected = active[list(model.active_gate_indices)]
+                            row["gate_mean"] = float(selected.mean())
+                            row["gate_min"] = float(selected.min())
+                            for name, index in MODALITY_INDEX.items():
+                                row[f"gate_mean_{name}"] = float(active[index])
+                                row[f"gate_min_{name}"] = float(active[index])
                         else:
                             row["gate_mean"] = 1.0
                             row["gate_min"] = 1.0
+                            for name in MODALITY_INDEX:
+                                row[f"gate_mean_{name}"] = 1.0
+                                row[f"gate_min_{name}"] = 1.0
                         row.update({f"prob_{index}": float(value)
                                     for index, value in enumerate(probability)})
                         rows.append(row)
@@ -411,6 +441,7 @@ def _new_model(experiment, model_id, args):
         base, model_id, gate_hidden=args.gate_hidden,
         initial_gate=args.initial_gate, capacity_hidden=capacity_hidden,
         renormalize_attention=args.renormalize_attention,
+        gate_modalities=args.gate_modalities,
     ).to(experiment.device)
     wrapper.freeze_backbone(train_classifier=not args.freeze_classifier)
     if args.unfreeze_backbone:
@@ -565,6 +596,15 @@ def train(args: argparse.Namespace) -> None:
     if "B4" in args.models:
         if not teacher.values:
             raise ValueError("B4 impact teacher contains no usable weighted edge targets")
+        active_modalities = {MODALITY_INDEX[name] for name in args.gate_modalities}
+        teacher_modalities = {key[3] for key in teacher.values}
+        inactive_teacher_modalities = teacher_modalities.difference(active_modalities)
+        if inactive_teacher_modalities:
+            names = [name for name, index in MODALITY_INDEX.items()
+                     if index in inactive_teacher_modalities]
+            raise ValueError(
+                "B4 teacher targets modalities fixed at identity: " + ", ".join(names)
+            )
         print(
             "B4 teacher: "
             f"kind={teacher_summary['teacher_kind']} "
@@ -702,6 +742,22 @@ def train(args: argparse.Namespace) -> None:
                 "strong_suppression_target_rate": float(np.mean([
                     float(row["gate_min"]) < 0.5 for row in predictions
                 ])),
+                **{
+                    f"mean_gate_{name}": float(np.mean([
+                        float(row[f"gate_mean_{name}"]) for row in predictions
+                    ]))
+                    for name in MODALITY_INDEX
+                },
+                **{
+                    f"strong_suppression_target_rate_{name}": float(np.mean([
+                        float(row[f"gate_min_{name}"]) < 0.5 for row in predictions
+                    ]))
+                    for name in MODALITY_INDEX
+                },
+                "gate_modalities": "+".join(args.gate_modalities),
+                "initial_gate": args.initial_gate,
+                "lambda_identity": args.lambda_identity,
+                "lambda_impact": args.lambda_impact if model_id == "B4" else 0.0,
                 "renormalize_attention": int(args.renormalize_attention),
                 "backbone_frozen": int(not args.unfreeze_backbone),
                 "classifier_frozen": int(args.freeze_classifier),

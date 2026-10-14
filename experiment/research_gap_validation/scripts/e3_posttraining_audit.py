@@ -64,6 +64,9 @@ def _load_wrapper(experiment, artifact_path: Path):
         initial_gate=float(config["initial_gate"]),
         capacity_hidden=int(config["capacity_hidden"]),
         renormalize_attention=bool(config["renormalize_attention"]),
+        gate_modalities=config.get(
+            "gate_modalities", ("text", "audio", "visual")
+        ),
     ).to(experiment.device)
     freeze_classifier = bool(config.get("freeze_classifier", False))
     wrapper.freeze_backbone(train_classifier=not freeze_classifier)

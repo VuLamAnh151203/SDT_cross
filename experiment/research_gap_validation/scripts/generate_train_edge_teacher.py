@@ -1,7 +1,7 @@
-"""Generate train-only B4 supervision with the exact propagation-edge action.
+"""Generate propagation-edge targets on train or validation conversations.
 
 For every source-target-modality edge, this script evaluates a fixed gate grid
-at the same attention hooks used by B3/B4.  The best train-label NLL gate is the
+at the same attention hooks used by B3/B4.  The best split-label NLL gate is the
 teacher target.  Confidence is the NLL advantage of the best suppress/keep
 decision and is stored separately so weak, nearly tied interventions do not
 dominate B4 training.
@@ -39,6 +39,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--feature-path")
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument(
+        "--split", choices=("train", "valid"), default="train",
+        help="Generate train supervision or a validation-only teacher-fit audit set.",
+    )
     parser.add_argument("--modalities", nargs="+", choices=tuple(MODALITY_INDEX),
                         default=("text",))
     parser.add_argument("--gates", nargs="+", type=float,
@@ -141,7 +145,15 @@ def generate(args: argparse.Namespace) -> None:
     wrapper = ReliabilitySDT(
         experiment.model, "B0", renormalize_attention=args.renormalize_attention
     ).to(experiment.device).eval()
-    ids = list(experiment.split_ids["train"])
+    ids = list(experiment.split_ids[args.split])
+    if not ids:
+        raise ValueError(f"Checkpoint contains no conversations in split {args.split!r}")
+    test_overlap = set(ids) & set(experiment.split_ids.get("test", []))
+    if test_overlap:
+        raise ValueError(
+            f"Refusing teacher generation because {args.split} overlaps test: "
+            f"{sorted(test_overlap)}"
+        )
     if args.max_conversations:
         ids = ids[:args.max_conversations]
     lookup = dataset_lookup(experiment.dataset)
@@ -183,7 +195,7 @@ def generate(args: argparse.Namespace) -> None:
                 source_speaker = int(batch.speakers[0, source].argmax().item())
                 target_speaker = int(batch.speakers[0, target].argmax().item())
                 rows.append({
-                    "split": "train",
+                    "split": args.split,
                     "checkpoint_id": experiment.checkpoint_id,
                     "conversation_id": conversation,
                     "source_idx": source,
@@ -210,14 +222,15 @@ def generate(args: argparse.Namespace) -> None:
         print(f"edge teacher {number}/{len(ids)} {conversation}", flush=True)
 
     output = args.output_dir.resolve() / "manifests"
-    path = write_csv(output / "train_edge_impact_teacher.csv", rows)
+    prefix = f"{args.split}_edge_impact_teacher"
+    path = write_csv(output / f"{prefix}.csv", rows)
     effective = [float(row["teacher_weight"]) for row in rows
                  if float(row["teacher_weight"]) > 0.0]
-    write_json(output / "train_edge_impact_teacher_manifest.json", {
+    write_json(output / f"{prefix}_manifest.json", {
         "checkpoint_id": experiment.checkpoint_id,
         "checkpoint_sha256": experiment.checkpoint_hash,
         "feature_sha256": experiment.feature_hash,
-        "split": "train",
+        "split": args.split,
         "conversation_ids": ids,
         "modalities": args.modalities,
         "teacher_kind": "propagation_edge_grid",
@@ -230,9 +243,7 @@ def generate(args: argparse.Namespace) -> None:
         "mean_effective_weight": float(np.mean(effective)) if effective else None,
         "decision_counts": decision_counts,
         "renormalize_attention": bool(args.renormalize_attention),
-        "test_conversations_present": bool(
-            set(ids) & set(experiment.split_ids.get("test", []))
-        ),
+        "test_conversations_present": bool(test_overlap),
         "output": str(path),
     })
 
