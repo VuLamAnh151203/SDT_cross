@@ -34,6 +34,27 @@ bash exec_iemocap.sh --gpu-id 0
 bash exec_iemocap.sh --selection-protocol test --gpu-id 0
 ```
 
+### Chạy nhiều seed
+
+Lệnh sau tạo một thư mục experiment duy nhất dưới `results/`. Mỗi seed có
+checkpoint riêng trong thư mục con để tránh ghi đè, còn kết quả tổng hợp nằm
+ngay ở thư mục experiment:
+
+```bash
+bash exec_iemocap_multiseed.sh 2024 2025 2026 2027 2028
+```
+
+Chọn GPU và tên thư mục kết quả:
+
+```bash
+GPU_ID=0 RUN_NAME=iemocap_validation_5seeds \
+  bash exec_iemocap_multiseed.sh 2024 2025 2026 2027 2028
+```
+
+Các file tổng hợp gồm `per_seed_metrics.csv`, `multiseed_summary.csv`,
+`multiseed_summary.json` và `multiseed_summary.txt`. Standard deviation là
+sample standard deviation (`ddof=1`).
+
 Hai protocol chỉ khác split dùng để chọn epoch. Kiến trúc, loss, optimizer và
 hyperparameters SDT không đổi. `validation` là mặc định vì không dùng test label
 để model selection.
